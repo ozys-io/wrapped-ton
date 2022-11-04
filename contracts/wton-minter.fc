@@ -1,31 +1,35 @@
 ;; Wrapped TON minter smart contract
 
 ;; storage scheme
-;; storage#_ total_supply:Coins admin_address:MsgAddress content:^Cell jetton_wallet_code:^Cell = Storage;
+;; storage#_ total_supply:Coins admin_address:MsgAddress next_admin_address:MsgAddress content:^Cell jetton_wallet_code:^Cell = Storage;
+
+#pragma version >=0.2.0;
 
 #include "imports/stdlib.fc";
 #include "imports/op-codes.fc";
 #include "imports/utils.fc";
-#pragma version >=0.2.0;
+#include "imports/discovery-params.fc";
 
 int gas_consumption() asm "10000000 PUSHINT"; ;; 0.01 TON
 int withdraw_gas_consumption() asm "10000000 PUSHINT"; ;; 0.01 TON
 int deposit_gas_consumption() asm "35000000 PUSHINT"; ;; 0.035 TON
 
-(int, slice, cell, cell) load_data() inline {
+(int, slice, slice, cell, cell) load_data() inline {
   slice ds = get_data().begin_parse();
   return (
       ds~load_coins(), ;; total_supply
       ds~load_msg_addr(), ;; admin_address
+      ds~load_msg_addr(), ;; next_admin_address
       ds~load_ref(), ;; content
       ds~load_ref()  ;; jetton_wallet_code
   );
 }
 
-() save_data(int total_supply, slice admin_address, cell content, cell jetton_wallet_code) impure inline {
+() save_data(int total_supply, slice admin_address, slice next_admin_address, cell content, cell jetton_wallet_code) impure inline {
   set_data(begin_cell()
     .store_coins(total_supply)
     .store_slice(admin_address)
+    .store_slice(next_admin_address)
     .store_ref(content)
     .store_ref(jetton_wallet_code)
     .end_cell()
@@ -69,7 +73,7 @@ int deposit_gas_consumption() asm "35000000 PUSHINT"; ;; 0.035 TON
     .store_coins(amount)
     ;; response_address
     .store_slice(my_address())
-    ;; custom_payload
+    ;; custom_payload (currently not used)
     .store_dict(new_dict())
     .end_cell();
   var msg = begin_cell()
@@ -93,11 +97,16 @@ int deposit_gas_consumption() asm "35000000 PUSHINT"; ;; 0.035 TON
     return ();
   }
   slice sender_address = cs~load_msg_addr();
+  cs~load_msg_addr(); ;; skip dst
+  cs~load_coins(); ;; skip value
+  cs~skip_bits(1); ;; skip extracurrency collection
+  cs~load_coins(); ;; skip ihr_fee
+  int fwd_fee = cs~load_coins(); ;; we use message fwd_fee for estimation of provide_wallet_address cost
 
   int op = in_msg_body~load_uint(32);
   int query_id = in_msg_body~load_uint(64);
 
-  (int total_supply, slice admin_address, cell content, cell jetton_wallet_code) = load_data();
+  (int total_supply, slice admin_address, slice next_admin_address, cell content, cell jetton_wallet_code) = load_data();
 
   if (op == op::deposit) {
     msg_value -= deposit_gas_consumption();
@@ -107,7 +116,7 @@ int deposit_gas_consumption() asm "35000000 PUSHINT"; ;; 0.035 TON
     int jetton_amount = in_msg_body~load_coins();
     throw_if(75, ton_amount < jetton_amount);
     mint_tokens(sender_address, jetton_wallet_code, jetton_amount);
-    save_data(total_supply + jetton_amount, admin_address, content, jetton_wallet_code);
+    save_data(total_supply + jetton_amount, admin_address, next_admin_address, content, jetton_wallet_code);
 
     msg_value -= jetton_amount + gas_consumption();
     if (msg_value > 0) {
@@ -131,7 +140,7 @@ int deposit_gas_consumption() asm "35000000 PUSHINT"; ;; 0.035 TON
     int jetton_amount = in_msg_body~load_coins();
     throw_if(75, total_supply < jetton_amount);
     burn_tokens(sender_address, jetton_wallet_code, jetton_amount);
-    save_data(total_supply, admin_address, content, jetton_wallet_code);
+    save_data(total_supply, admin_address, next_admin_address, content, jetton_wallet_code);
 
     return ();
   }
@@ -149,26 +158,61 @@ int deposit_gas_consumption() asm "35000000 PUSHINT"; ;; 0.035 TON
         .store_slice(from_address)
         .store_coins(jetton_amount)
         .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        ;; op code = 0
         .store_uint(0, 32)
         .store_uint(query_id, 64);
       send_raw_message(msg.end_cell(), 1); ;; pay transfer fees seperatly, revert on errors
     }
 
-    save_data(total_supply - jetton_amount, admin_address, content, jetton_wallet_code);
+    save_data(total_supply - jetton_amount, admin_address, next_admin_address, content, jetton_wallet_code);
 
     return ();
   }
 
-  if (op == op::change_admin) { ;; change admin
+  if (op == op::provide_wallet_address) {
+    throw_unless(75, msg_value > fwd_fee + const::provide_address_gas_consumption);
+
+    slice owner_address = in_msg_body~load_msg_addr();
+    int include_address? = in_msg_body~load_uint(1);
+
+    cell included_address = include_address?
+      ? begin_cell().store_slice(owner_address).end_cell()
+      : null();
+
+    var msg = begin_cell()
+      .store_uint(0x18, 6)
+      .store_slice(sender_address)
+      .store_coins(0)
+      .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+      .store_uint(op::take_wallet_address, 32)
+      .store_uint(query_id, 64);
+
+    if (is_resolvable?(owner_address)) {
+      msg = msg.store_slice(calculate_user_jetton_wallet_address(owner_address, my_address(), jetton_wallet_code));
+    } else {
+      msg = msg.store_uint(0, 2); ;; addr_none
+    }
+    send_raw_message(msg.store_maybe_ref(included_address).end_cell(), 64);
+    return ();
+  }
+
+  if (op == op::change_next_admin) { ;; change next admin
     throw_unless(73, equal_slices(sender_address, admin_address));
-    slice new_admin_address = in_msg_body~load_msg_addr();
-    save_data(total_supply, new_admin_address, content, jetton_wallet_code);
+    slice new_next_admin_address = in_msg_body~load_msg_addr();
+    save_data(total_supply, admin_address, new_next_admin_address, content, jetton_wallet_code);
+    return ();
+  }
+
+  if (op == op::change_admin) { ;; change admin (only next admin can get an admin permission)
+    throw_unless(73, equal_slices(sender_address, next_admin_address));
+    slice addr_none = begin_cell().store_uint(0, 2).end_cell().begin_parse();
+    save_data(total_supply, next_admin_address, addr_none, content, jetton_wallet_code);
     return ();
   }
 
   if (op == op::change_content) { ;; change content, delete this for immutable tokens
     throw_unless(73, equal_slices(sender_address, admin_address));
-    save_data(total_supply, admin_address, in_msg_body~load_ref(), jetton_wallet_code);
+    save_data(total_supply, admin_address, next_admin_address, in_msg_body~load_ref(), jetton_wallet_code);
     return ();
   }
 
@@ -180,11 +224,16 @@ int deposit_gas_consumption() asm "35000000 PUSHINT"; ;; 0.035 TON
 }
 
 (int, int, slice, cell, cell) get_jetton_data() method_id {
-  (int total_supply, slice admin_address, cell content, cell jetton_wallet_code) = load_data();
+  (int total_supply, slice admin_address, _, cell content, cell jetton_wallet_code) = load_data();
   return (total_supply, -1, admin_address, content, jetton_wallet_code);
 }
 
+(slice) get_jetton_extra_data() method_id {
+  (_, _, slice next_admin_address, _, _) = load_data();
+  return (next_admin_address);
+}
+
 slice get_wallet_address(slice owner_address) method_id {
-  (int total_supply, slice admin_address, cell content, cell jetton_wallet_code) = load_data();
+  (_, _, _, _, cell jetton_wallet_code) = load_data();
   return calculate_user_jetton_wallet_address(owner_address, my_address(), jetton_wallet_code);
 }

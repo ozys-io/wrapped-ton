@@ -1,9 +1,10 @@
 ;; operations (constant values taken from crc32 on op message in the companion .tlb files and appear during build)
 
-;; Minter
+;; Wton
 const op::deposit = 0x77a33521;
 const op::withdraw = 0x47d1895f;
-const op::change_admin = 0x4840664f;
+const op::change_next_admin = 0x62dd86f1;
+const op::change_admin = 0x66447dad;
 const op::change_content = 0x743f8e58;
 
 ;; Wallet
