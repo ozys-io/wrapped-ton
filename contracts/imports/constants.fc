@@ -1,0 +1,5 @@
+const const::min_tons_for_storage = 10000000; ;; 0.01 TON
+const const::gas_consumption = 10000000; ;; 0.01 TON
+const const::provide_address_gas_consumption = 10000000; ;; 0.01 TON
+
+const const::work_chain = 0x00; ;; normally 0, only special contracts should be deployed to masterchain (-1)

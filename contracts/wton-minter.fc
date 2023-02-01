@@ -6,13 +6,14 @@
 #pragma version >=0.2.0;
 
 #include "imports/stdlib.fc";
+#include "imports/constants.fc";
 #include "imports/op-codes.fc";
 #include "imports/utils.fc";
 #include "imports/discovery-params.fc";
 
 int gas_consumption() asm "10000000 PUSHINT"; ;; 0.01 TON
-int withdraw_gas_consumption() asm "10000000 PUSHINT"; ;; 0.01 TON
-int deposit_gas_consumption() asm "35000000 PUSHINT"; ;; 0.035 TON
+int withdraw_gas_consumption() asm "50000000 PUSHINT"; ;; 0.05 TON
+int deposit_gas_consumption() asm "50000000 PUSHINT"; ;; 0.05 TON
 
 (int, slice, slice, cell, cell) load_data() inline {
   slice ds = get_data().begin_parse();
@@ -48,14 +49,14 @@ int deposit_gas_consumption() asm "35000000 PUSHINT"; ;; 0.035 TON
     ;; from_address == to_address
     .store_slice(to_address)
     ;; response_address
-    .store_slice(my_address())
+    .store_slice(to_address)
     ;; forward ton amount
     .store_coins(0)
     .end_cell();
   var msg = begin_cell()
     .store_uint(0x18, 6)
     .store_slice(to_wallet_address)
-    .store_coins(gas_consumption())
+    .store_coins(gas_consumption() * 2)
     .store_uint(4 + 2 + 1, 1 + 4 + 4 + 64 + 32 + 1 + 1 + 1)
     .store_ref(state_init)
     .store_ref(master_msg);
@@ -79,7 +80,7 @@ int deposit_gas_consumption() asm "35000000 PUSHINT"; ;; 0.035 TON
   var msg = begin_cell()
     .store_uint(0x18, 6)
     .store_slice(to_wallet_address)
-    .store_coins(gas_consumption() * 3)
+    .store_coins(gas_consumption() * 3) ;; wallet -> wton burn_notification
     .store_uint(4 + 2 + 1, 1 + 4 + 4 + 64 + 32 + 1 + 1 + 1)
     .store_ref(state_init)
     .store_ref(master_msg);
@@ -118,7 +119,7 @@ int deposit_gas_consumption() asm "35000000 PUSHINT"; ;; 0.035 TON
     mint_tokens(sender_address, jetton_wallet_code, jetton_amount);
     save_data(total_supply + jetton_amount, admin_address, next_admin_address, content, jetton_wallet_code);
 
-    msg_value -= jetton_amount + gas_consumption();
+    msg_value -= jetton_amount;
     if (msg_value > 0) {
       var msg = begin_cell()
         .store_uint(0x10, 6) ;; nobounce - int_msg_info$0 ihr_disabled:Bool bounce:Bool bounced:Bool src:MsgAddress -> 010000
@@ -127,7 +128,7 @@ int deposit_gas_consumption() asm "35000000 PUSHINT"; ;; 0.035 TON
         .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
         .store_uint(op::excesses, 32)
         .store_uint(query_id, 64);
-      send_raw_message(msg.end_cell(), 2); ;; pay transfer fees together, ignore errors
+      send_raw_message(msg.end_cell(), 1 + 2); ;; pay transfer fees together, ignore errors
     }
 
     return ();
@@ -152,6 +153,8 @@ int deposit_gas_consumption() asm "35000000 PUSHINT"; ;; 0.035 TON
       equal_slices(calculate_user_jetton_wallet_address(from_address, my_address(), jetton_wallet_code), sender_address)
     );
 
+    save_data(total_supply - jetton_amount, admin_address, next_admin_address, content, jetton_wallet_code);
+
     if (jetton_amount > 0) {
       var msg = begin_cell()
         .store_uint(0x10, 6) ;; nobounce - int_msg_info$0 ihr_disabled:Bool bounce:Bool bounced:Bool src:MsgAddress -> 010000
@@ -159,12 +162,10 @@ int deposit_gas_consumption() asm "35000000 PUSHINT"; ;; 0.035 TON
         .store_coins(jetton_amount)
         .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
         ;; op code = 0
-        .store_uint(0, 32)
+        .store_uint(op::excesses, 32)
         .store_uint(query_id, 64);
       send_raw_message(msg.end_cell(), 1); ;; pay transfer fees seperatly, revert on errors
     }
-
-    save_data(total_supply - jetton_amount, admin_address, next_admin_address, content, jetton_wallet_code);
 
     return ();
   }
@@ -236,4 +237,8 @@ int deposit_gas_consumption() asm "35000000 PUSHINT"; ;; 0.035 TON
 slice get_wallet_address(slice owner_address) method_id {
   (_, _, _, _, cell jetton_wallet_code) = load_data();
   return calculate_user_jetton_wallet_address(owner_address, my_address(), jetton_wallet_code);
+}
+
+int version() method_id {
+    return (202301191);
 }
