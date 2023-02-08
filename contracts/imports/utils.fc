@@ -1,6 +1,7 @@
 #pragma version >=0.2.0;
 
 #include "stdlib.fc";
+#include "message_utils.fc";
 
 () send_grams(slice address, int amount) impure {
   cell msg = begin_cell()
@@ -48,4 +49,64 @@ slice calculate_jetton_wallet_address(cell state_init) inline {
 
 slice calculate_user_jetton_wallet_address(slice owner_address, slice jetton_master_address, cell jetton_wallet_code) inline {
   return calculate_jetton_wallet_address(calculate_jetton_wallet_state_init(owner_address, jetton_master_address, jetton_wallet_code));
+}
+
+cell pack_jetton_minter_data(int total_supply, slice admin_address, slice next_admin_address, slice minter_address, int is_initialized, int token_address, cell content, cell jetton_wallet_code) inline {
+  return begin_cell()
+    .store_coins(total_supply)
+    .store_uint(is_initialized, 1)
+    .store_uint(token_address, 160)
+    .store_ref(begin_cell()
+      .store_slice(admin_address)
+      .store_slice(next_admin_address)
+      .store_slice(minter_address)
+    .end_cell())
+    .store_ref(content)
+    .store_ref(jetton_wallet_code)
+    .end_cell();
+}
+
+cell calculate_jetton_minter_state_init(slice admin_address, slice minter_address, int token_address, cell content, cell jetton_minter_code, cell jetton_wallet_code) inline {
+  slice addr_none = begin_cell().store_uint(0, 2).end_cell().begin_parse();
+  return begin_cell()
+    .store_uint(0, 2)
+    .store_dict(jetton_minter_code)
+    .store_dict(pack_jetton_minter_data(0, admin_address, addr_none, minter_address, 0, token_address, content, jetton_wallet_code))
+    .store_uint(0, 1)
+    .end_cell();
+}
+
+slice calculate_contract_address(cell state_init) inline {
+  return begin_cell()
+    .store_uint(4, 3)
+    .store_int(workchain(), 8)
+    .store_uint(cell_hash(state_init), 256)
+    .end_cell()
+    .begin_parse();
+}
+
+slice calculate_jetton_minter_address(slice admin_address, slice minter_address, int token_address, cell content, cell jetton_minter_code, cell jetton_wallet_code) inline {
+  return calculate_contract_address(calculate_jetton_minter_state_init(admin_address, minter_address, token_address, content, jetton_minter_code, jetton_wallet_code));
+}
+
+(int) check_multi_signatures(int hash, cell signatures, cell pubkeys, int req_count) impure {
+  int cnt = 0;
+  cell dup_pubkey_check = new_dict();
+
+  do {
+    slice cs = signatures.begin_parse();
+    int pubkey = cs~load_uint(256);
+
+    (_, var found) = pubkeys.udict_get?(256, pubkey);
+    throw_if(40, found == 0);
+    (_, var found2) = dup_pubkey_check.udict_get?(256, pubkey);
+    throw_unless(39, found2 == 0);
+    dup_pubkey_check~udict_set(256, pubkey, begin_cell().store_uint(1, 1).end_cell().begin_parse());
+    throw_unless(41, check_signature(hash, cs~load_bits(512), pubkey));
+    cnt += 1;
+
+    signatures = cs~load_dict();
+  } until (cell_null?(signatures));
+
+  return cnt >= req_count;
 }

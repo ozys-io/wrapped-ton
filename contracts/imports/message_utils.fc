@@ -1,0 +1,18 @@
+#pragma version >=0.2.0;
+
+#include "stdlib.fc";
+
+() emit_log_cell_ref(int event_id, cell data) impure inline {
+  var msg = begin_cell()
+    ;; 1100
+    .store_uint(12, 4) ;; ext_out_msg_info$11 src:MsgAddressInt ()
+    ;; 01
+    .store_uint(1, 2)
+    ;; 100000000
+    .store_uint(256, 9)
+    .store_uint(event_id, 256)
+    .store_uint(1, 64 + 32 + 1 + 1) ;; created_lt, created_at, init:Maybe, body:Either
+    .store_ref(data)
+    .end_cell();
+  send_raw_message(msg, 0);
+}
